@@ -4,7 +4,19 @@ import { jsPDF } from "jspdf";
 import Invoice from "./Invoice.jsx";
 
 const INVOICE_WIDTH = 794;
+const MOBILE_QUERY = "(max-width: 900px)";
 let nextId = 2;
+
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia(MOBILE_QUERY).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_QUERY);
+    const onChange = (e) => setIsMobile(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return isMobile;
+}
 
 const initial = {
   invoiceNo: "001",
@@ -30,19 +42,32 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [scale, setScale] = useState(1);
+  const [showPreview, setShowPreview] = useState(false);
+  const isMobile = useIsMobile();
   const invoiceRef = useRef(null);
-  const previewRef = useRef(null);
+  const containerRef = useRef(null);
 
-  // Shrink the preview to fit narrow screens (the PDF is always captured at full size).
+  // Shrink the preview to fit its container (the PDF is always captured at full size).
   useEffect(() => {
     const fit = () => {
-      const w = previewRef.current?.parentElement?.clientWidth ?? INVOICE_WIDTH;
+      const w = containerRef.current?.clientWidth ?? INVOICE_WIDTH;
       setScale(Math.min(1, w / INVOICE_WIDTH));
     };
     fit();
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
-  }, []);
+  }, [isMobile, showPreview]);
+
+  useEffect(() => {
+    if (!isMobile || !showPreview) return;
+    document.body.style.overflow = "hidden";
+    const onKey = (e) => e.key === "Escape" && setShowPreview(false);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = "";
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [isMobile, showPreview]);
 
   const set = (key, value) => setData((d) => ({ ...d, [key]: value }));
   const num = (v) => (v === "" ? 0 : Number(v) || 0);
@@ -55,12 +80,16 @@ export default function App() {
   async function downloadPdf() {
     setBusy(true);
     setMessage("Preparing PDF…");
-    const el = invoiceRef.current;
-    const wrapper = previewRef.current;
-    const oldTransform = el.style.transform;
     try {
-      el.style.transform = "none";
-      const canvas = await html2canvas(el, { scale: 2, backgroundColor: "#fbf7ea" });
+      const canvas = await html2canvas(invoiceRef.current, {
+        scale: 2,
+        backgroundColor: "#fbf7ea",
+        // Capture at full size regardless of the on-screen preview scale.
+        onclone: (_doc, el) => {
+          el.parentElement.style.transform = "none";
+          el.closest(".view").style.overflow = "visible";
+        },
+      });
       const height = (210 * canvas.height) / canvas.width;
       const pdf = new jsPDF({ unit: "mm", format: [210, height] });
       pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, 210, height);
@@ -70,8 +99,6 @@ export default function App() {
     } catch (err) {
       setMessage("Could not create the PDF: " + (err.message || err));
     } finally {
-      el.style.transform = oldTransform;
-      wrapper.style.transform = "";
       setBusy(false);
     }
   }
@@ -123,16 +150,39 @@ export default function App() {
         <Field label="Signed by"><input value={data.signer} onChange={(e) => set("signer", e.target.value)} /></Field>
         <Field label="VAT registration number"><input placeholder="Optional" value={data.vatReg} onChange={(e) => set("vatReg", e.target.value)} /></Field>
 
-        <div style={{ marginTop: 14 }}>
+        <div className="actions">
+          {isMobile && (
+            <button className="secondary" onClick={() => setShowPreview(true)}>👁 Preview</button>
+          )}
           <button onClick={downloadPdf} disabled={busy}>⬇ Download PDF</button>
         </div>
         <div className="msg">{message}</div>
       </div>
 
-      <div>
-        <div className="view" style={{ width: INVOICE_WIDTH * scale, height: (invoiceRef.current?.offsetHeight ?? 1123) * scale }}>
-          <div ref={previewRef} style={{ width: INVOICE_WIDTH, transform: `scale(${scale})`, transformOrigin: "top left" }}>
-            <Invoice ref={invoiceRef} data={data} />
+      {/* On mobile the invoice stays mounted off-screen when closed so the PDF can still be captured. */}
+      <div
+        className={isMobile ? `preview-modal${showPreview ? " open" : ""}` : ""}
+        onClick={() => setShowPreview(false)}
+        role={isMobile ? "dialog" : undefined}
+        aria-modal={isMobile ? true : undefined}
+        aria-hidden={isMobile && !showPreview ? true : undefined}
+      >
+        <div className="preview-dialog" onClick={(e) => e.stopPropagation()}>
+          {isMobile && (
+            <div className="modal-bar">
+              <b>Invoice preview</b>
+              <div>
+                <button onClick={downloadPdf} disabled={busy}>⬇ PDF</button>
+                <button className="secondary" onClick={() => setShowPreview(false)}>✕ Close</button>
+              </div>
+            </div>
+          )}
+          <div ref={containerRef}>
+            <div className="view" style={{ width: INVOICE_WIDTH * scale, height: (invoiceRef.current?.offsetHeight ?? 1123) * scale }}>
+              <div style={{ width: INVOICE_WIDTH, transform: `scale(${scale})`, transformOrigin: "top left" }}>
+                <Invoice ref={invoiceRef} data={data} />
+              </div>
+            </div>
           </div>
         </div>
       </div>
